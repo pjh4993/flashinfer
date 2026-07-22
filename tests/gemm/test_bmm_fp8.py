@@ -64,5 +64,31 @@ def test_bmm_fp8(b, m, n, k, input_dtype, mat2_dtype, res_dtype, backend, auto_t
     assert cos_sim > 0.99
 
 
+def test_bmm_fp8_cublas_under_autotune_sm100():
+    """Regression for #3085: the cuBLAS bmm_fp8 runner must use a real
+    cublasLtHandle. Reinterpreting torch's cublasHandle_t as a cublasLtHandle_t
+    is UB and segfaults inside cuBLASLt under autotune on Blackwell (SM100)."""
+    cc = get_compute_capability(torch.device("cuda"))
+    if cc[0] not in (10, 11, 12):
+        pytest.skip("cuBLASLt fp8 GEMM path targets SM100+")
+    b, m, n, k = 1, 128, 256, 256
+    a = torch.randn(b, m, k, device="cuda", dtype=torch.bfloat16)
+    mat2 = torch.randn(b, n, k, device="cuda", dtype=torch.bfloat16).transpose(-2, -1)
+    a_fp8, a_inv_s = to_float8(a, dtype=torch.float8_e4m3fn)
+    mat2_fp8, mat2_inv_s = to_float8(mat2, dtype=torch.float8_e4m3fn)
+    reference = torch.bmm(a, mat2)
+
+    with autotune(True):
+        out = bmm_fp8(
+            a_fp8, mat2_fp8, a_inv_s, mat2_inv_s, torch.bfloat16, backend="cublas"
+        )
+    torch.cuda.synchronize()
+
+    cos_sim = F.cosine_similarity(
+        reference.reshape(-1).float(), out.reshape(-1).float(), dim=0
+    )
+    assert cos_sim > 0.99
+
+
 if __name__ == "__main__":
     pytest.main([__file__])
